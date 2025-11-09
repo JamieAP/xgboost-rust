@@ -9,6 +9,27 @@ fn get_xgboost_version() -> String {
     env::var("XGBOOST_VERSION").unwrap_or_else(|_| "3.1.1".to_string())
 }
 
+fn parse_version(version: &str) -> (u32, u32, u32) {
+    let parts: Vec<&str> = version.split('.').collect();
+    let major = parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch)
+}
+
+fn emit_version_cfg_flags(version: &str) {
+    let (major, minor, _patch) = parse_version(version);
+
+    // XGBoost 1.4.0+ has thread-safe predictions for tree models
+    // See: https://github.com/dmlc/xgboost/issues/5339
+    if major > 1 || (major == 1 && minor >= 4) {
+        println!("cargo:rustc-cfg=xgboost_thread_safe");
+        println!("cargo:warning=XGBoost version {} supports thread-safe predictions", version);
+    } else {
+        println!("cargo:warning=XGBoost version {} does NOT support thread-safe predictions", version);
+    }
+}
+
 fn get_platform_info() -> (String, String) {
     let target = env::var("TARGET").unwrap();
 
@@ -165,6 +186,10 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let xgb_include_root = out_dir.join("include");
+
+    // Get version and emit cfg flags for thread safety
+    let version = get_xgboost_version();
+    emit_version_cfg_flags(&version);
 
     // Download the headers
     if let Err(e) = download_xgboost_headers(&out_dir) {
