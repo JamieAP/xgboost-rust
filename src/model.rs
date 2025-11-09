@@ -91,12 +91,17 @@ impl Booster {
         })?;
 
         // Load model into the booster
-        XGBoostError::check_return_value(unsafe {
+        let result = XGBoostError::check_return_value(unsafe {
             sys::XGBoosterLoadModel(
                 handle,
                 path_c_str.as_ptr(),
             )
-        })?;
+        });
+
+        if let Err(e) = result {
+            unsafe { sys::XGBoosterFree(handle); }
+            return Err(e);
+        }
 
         Ok(Booster { handle })
     }
@@ -122,13 +127,18 @@ impl Booster {
         })?;
 
         // Load model from buffer into the booster
-        XGBoostError::check_return_value(unsafe {
+        let result = XGBoostError::check_return_value(unsafe {
             sys::XGBoosterLoadModelFromBuffer(
                 handle,
                 buffer.as_ptr() as *const std::os::raw::c_void,
                 buffer.len() as u64,
             )
-        })?;
+        });
+
+        if let Err(e) = result {
+            unsafe { sys::XGBoosterFree(handle); }
+            return Err(e);
+        }
 
         Ok(Booster { handle })
     }
