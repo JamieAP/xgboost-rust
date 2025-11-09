@@ -1,12 +1,61 @@
 extern crate bindgen;
 
+use sha2::{Sha256, Digest};
+use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
+use std::thread;
+use std::time::Duration;
 
 fn get_xgboost_version() -> String {
     env::var("XGBOOST_VERSION").unwrap_or_else(|_| "3.1.1".to_string())
+}
+
+// Known SHA256 checksums for header files by version
+fn get_header_checksums() -> HashMap<&'static str, (&'static str, &'static str)> {
+    let mut checksums = HashMap::new();
+    // Format: version => (c_api.h SHA256, base.h SHA256)
+    checksums.insert("3.1.1", (
+        "c0f0a98eb36fb5e451fdd3e9ead2d185f4c61be2a6997fc295e5d1a94f3096e2",
+        "8d771fb20e03f3443e21cfdcd26ac5cd880be585b8817f2e0d146e7c5c7bb63a"
+    ));
+    checksums.insert("3.0.5", (
+        "2ccec6e5301fa5a1324f60af48b9c6be5879e590ed583ec9d74297e6018860bc",
+        "47f0148706907ccecb72b8484687524bc36d58b4c6fe5e7b81e59de157261ea7"
+    ));
+    checksums.insert("2.1.4", (
+        "b804850ec6c7a00f8e36f139dfce7fe348fc9ad066ff4cb7ac44a4f5420ec1dd",
+        "525c4a2ba2f6bd9b17a299978e16f91897d497d6ae0ae5df2335dd059f00d0ce"
+    ));
+    checksums.insert("1.7.6", (
+        "145ed1df652937122b6f6bc31331051eabc02226a0b62349ea593cdbe841c20d",
+        "b26e17eadbcc6350dc900b35d164eedc02b1cd2a64913c560d4d416c81a68935"
+    ));
+    checksums.insert("1.4.2", (
+        "3f5de5d046a3c9576e0c560abe5fa1e889f72b4b18ff2bf73e5f98290d47d0dc",
+        "e3abfcc730eee86acf44124d5496a2b41413f963c4bbf560513eeae0b7d12fb7"
+    ));
+    checksums
+}
+
+fn compute_sha256(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+fn verify_checksum(data: &[u8], expected: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let actual = compute_sha256(data);
+    if actual != expected {
+        return Err(format!(
+            "SHA256 checksum mismatch for {}:\n  Expected: {}\n  Got:      {}",
+            filename, expected, actual
+        ).into());
+    }
+    println!("cargo:warning=✓ Verified SHA256 for {}", filename);
+    Ok(())
 }
 
 fn parse_version(version: &str) -> (u32, u32, u32) {
@@ -60,48 +109,106 @@ fn get_platform_info() -> (String, String) {
 
 fn download_xgboost_headers(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let version = get_xgboost_version();
+    let checksums = get_header_checksums();
+
+    // Get expected checksums for this version
+    let (c_api_expected, base_expected) = checksums.get(version.as_str())
+        .ok_or_else(|| format!(
+            "No known SHA256 checksums for XGBoost version {}. \
+             Please verify this version manually or add checksums to build.rs",
+            version
+        ))?;
 
     // Create the include/xgboost directory
     let include_dir = out_dir.join("include/xgboost");
     fs::create_dir_all(&include_dir)?;
 
-    // Download the c_api.h file
-    let c_api_url = format!(
-        "https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/c_api.h",
-        version
-    );
-
-    println!("cargo:warning=Downloading c_api.h from: {}", c_api_url);
-
-    let response = ureq::get(&c_api_url).call()?;
-    let status = response.status();
-    if status < 200 || status >= 300 {
-        return Err(format!("Failed to download c_api.h: HTTP {}", status).into());
-    }
-
+    // Download and verify c_api.h
     let c_api_path = include_dir.join("c_api.h");
-    let mut file = fs::File::create(&c_api_path)?;
-    io::copy(&mut response.into_reader(), &mut file)?;
+    download_and_verify_file(
+        &format!("https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/c_api.h", version),
+        &c_api_path,
+        c_api_expected,
+        "c_api.h"
+    )?;
 
-    // Also download base.h which is referenced by c_api.h
-    let base_url = format!(
-        "https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/base.h",
-        version
-    );
-
-    println!("cargo:warning=Downloading base.h from: {}", base_url);
-
-    let response = ureq::get(&base_url).call()?;
-    let status = response.status();
-    if status < 200 || status >= 300 {
-        return Err(format!("Failed to download base.h: HTTP {}", status).into());
-    }
-
+    // Download and verify base.h
     let base_path = include_dir.join("base.h");
-    let mut file = fs::File::create(&base_path)?;
-    io::copy(&mut response.into_reader(), &mut file)?;
+    download_and_verify_file(
+        &format!("https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/base.h", version),
+        &base_path,
+        base_expected,
+        "base.h"
+    )?;
 
     Ok(())
+}
+
+fn download_and_verify_file(
+    url: &str,
+    dest_path: &Path,
+    expected_sha256: &str,
+    filename: &str
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:warning=Downloading {} from: {}", filename, url);
+
+    // Download into memory buffer
+    let response = ureq::get(url).call()?;
+    let status = response.status();
+    if status < 200 || status >= 300 {
+        return Err(format!("Failed to download {}: HTTP {}", filename, status).into());
+    }
+
+    let mut buffer = Vec::new();
+    response.into_reader().read_to_end(&mut buffer)?;
+
+    // Verify SHA256 checksum
+    verify_checksum(&buffer, expected_sha256, filename)?;
+
+    // Only write file after successful verification
+    let mut file = fs::File::create(dest_path)?;
+    file.write_all(&buffer)?;
+
+    Ok(())
+}
+
+fn download_with_retry(url: &str, max_retries: u32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut last_error = None;
+
+    for attempt in 0..max_retries {
+        if attempt > 0 {
+            let backoff = Duration::from_millis(100 * 2_u64.pow(attempt));
+            println!("cargo:warning=Retry attempt {} after {:?}", attempt + 1, backoff);
+            thread::sleep(backoff);
+        }
+
+        match ureq::get(url).call() {
+            Ok(response) => {
+                let status = response.status();
+                if status < 200 || status >= 300 {
+                    last_error = Some(format!("HTTP {}", status));
+                    continue;
+                }
+
+                let mut buffer = Vec::new();
+                if let Err(e) = response.into_reader().read_to_end(&mut buffer) {
+                    last_error = Some(e.to_string());
+                    continue;
+                }
+
+                return Ok(buffer);
+            }
+            Err(e) => {
+                last_error = Some(e.to_string());
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to download after {} attempts. Last error: {}",
+        max_retries,
+        last_error.unwrap_or_else(|| "Unknown error".to_string())
+    ).into())
 }
 
 fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -118,44 +225,59 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
         _ => return Err(format!("Unsupported platform: {}-{}", os, arch).into()),
     };
 
-    let download_url = format!(
-        "https://files.pythonhosted.org/packages/py3/x/xgboost/{}",
-        wheel_filename
-    );
-
-    println!("cargo:warning=Downloading XGBoost wheel from: {}", download_url);
-
-    // Download the wheel
-    let wheel_dir = out_dir.join("wheel");
-    fs::create_dir_all(&wheel_dir)?;
-    let wheel_path = wheel_dir.join(&wheel_filename);
-
-    let response = ureq::get(&download_url).call()?;
-    let status = response.status();
-    if status < 200 || status >= 300 {
-        return Err(format!("Failed to download wheel: HTTP {}", status).into());
-    }
-
-    let mut wheel_file = fs::File::create(&wheel_path)?;
-    io::copy(&mut response.into_reader(), &mut wheel_file)?;
-    drop(wheel_file);
-
-    println!("cargo:warning=Extracting wheel: {}", wheel_path.display());
-
-    // Extract the wheel (it's a ZIP file)
-    let file = fs::File::open(&wheel_path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-
-    // Create libs directory
-    let lib_dir = out_dir.join("libs");
-    fs::create_dir_all(&lib_dir)?;
-
-    // Determine library filename based on OS
     let lib_filename = match os.as_str() {
         "windows" => "xgboost.dll",
         "darwin" => "libxgboost.dylib",
         _ => "libxgboost.so",
     };
+
+    // Setup paths
+    let wheel_dir = out_dir.join("wheel");
+    let lib_dir = out_dir.join("libs");
+    fs::create_dir_all(&wheel_dir)?;
+    fs::create_dir_all(&lib_dir)?;
+
+    let wheel_path = wheel_dir.join(&wheel_filename);
+    let lib_dest_path = lib_dir.join(lib_filename);
+
+    // Check if library already exists and is valid
+    if lib_dest_path.exists() {
+        println!("cargo:warning=Using cached XGBoost library at: {}", lib_dest_path.display());
+        return Ok(());
+    }
+
+    // Check if wheel is cached
+    let wheel_buffer = if wheel_path.exists() {
+        println!("cargo:warning=Using cached wheel at: {}", wheel_path.display());
+        fs::read(&wheel_path)?
+    } else {
+        // Download wheel with retry
+        let download_url = format!(
+            "https://files.pythonhosted.org/packages/py3/x/xgboost/{}",
+            wheel_filename
+        );
+
+        println!("cargo:warning=Downloading XGBoost wheel from: {}", download_url);
+        let buffer = download_with_retry(&download_url, 3)?;
+
+        // Write atomically (temp file + rename)
+        let temp_path = wheel_path.with_extension("tmp");
+        {
+            let mut temp_file = fs::File::create(&temp_path)?;
+            temp_file.write_all(&buffer)?;
+            temp_file.sync_all()?;
+        }
+        fs::rename(&temp_path, &wheel_path)?;
+
+        println!("cargo:warning=✓ Downloaded and cached wheel");
+        buffer
+    };
+
+    // Extract library from wheel
+    println!("cargo:warning=Extracting library from wheel");
+
+    let cursor = io::Cursor::new(wheel_buffer);
+    let mut archive = zip::ZipArchive::new(cursor)?;
 
     // Search for the library file in the wheel
     let mut found = false;
@@ -166,9 +288,16 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
         // Look for the library file (usually in xgboost/lib/)
         if file_path.ends_with(lib_filename) {
             println!("cargo:warning=Found library at: {}", file_path);
-            let dest_path = lib_dir.join(lib_filename);
-            let mut dest = fs::File::create(&dest_path)?;
-            io::copy(&mut file, &mut dest)?;
+
+            // Extract to temp file, then rename atomically
+            let temp_dest_path = lib_dest_path.with_extension("tmp");
+            {
+                let mut dest = fs::File::create(&temp_dest_path)?;
+                io::copy(&mut file, &mut dest)?;
+                dest.sync_all()?;
+            }
+            fs::rename(&temp_dest_path, &lib_dest_path)?;
+
             found = true;
             break;
         }
@@ -178,7 +307,7 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
         return Err(format!("Library file {} not found in wheel", lib_filename).into());
     }
 
-    println!("cargo:warning=Successfully extracted XGBoost library to: {}", lib_dir.display());
+    println!("cargo:warning=✓ Successfully extracted XGBoost library to: {}", lib_dir.display());
 
     Ok(())
 }

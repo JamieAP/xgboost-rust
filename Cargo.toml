@@ -13,6 +13,7 @@ rust-version = "1.70"
 bindgen = "0.72.0"
 ureq = "2.0"
 zip = "0.6"
+sha2 = "0.10"
 
 [features]
 default = []

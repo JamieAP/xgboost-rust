@@ -161,6 +161,24 @@ impl Booster {
         option_mask: u32,
         training: bool,
     ) -> XGBoostResult<Vec<f32>> {
+        // Validate input dimensions
+        let expected_len = num_rows.checked_mul(num_features)
+            .ok_or_else(|| XGBoostError {
+                description: format!(
+                    "Integer overflow: num_rows ({}) * num_features ({}) exceeds usize::MAX",
+                    num_rows, num_features
+                ),
+            })?;
+
+        if data.len() != expected_len {
+            return Err(XGBoostError {
+                description: format!(
+                    "Data length mismatch: expected {} elements ({}×{}), got {}",
+                    expected_len, num_rows, num_features, data.len()
+                ),
+            });
+        }
+
         // Create DMatrix from data
         let mut dmatrix_handle: sys::DMatrixHandle = ptr::null_mut();
 
@@ -173,6 +191,17 @@ impl Booster {
                 &mut dmatrix_handle,
             )
         })?;
+
+        // RAII guard to ensure DMatrix is always freed
+        struct DMatrixGuard(sys::DMatrixHandle);
+        impl Drop for DMatrixGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    sys::XGDMatrixFree(self.0);
+                }
+            }
+        }
+        let _guard = DMatrixGuard(dmatrix_handle);
 
         // Make prediction
         let mut out_len: u64 = 0;
@@ -190,15 +219,19 @@ impl Booster {
             )
         })?;
 
+        // Validate output pointers
+        if out_result.is_null() || out_len == 0 {
+            return Err(XGBoostError {
+                description: "XGBoost returned null or empty prediction result".to_string(),
+            });
+        }
+
         // Copy results to a Vec
         let results = unsafe {
             std::slice::from_raw_parts(out_result, out_len as usize).to_vec()
         };
 
-        // Free DMatrix
-        unsafe {
-            sys::XGDMatrixFree(dmatrix_handle);
-        }
+        // DMatrix will be automatically freed when _guard goes out of scope
 
         Ok(results)
     }
