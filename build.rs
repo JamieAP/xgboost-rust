@@ -396,6 +396,8 @@ fn main() {
         .allowlist_type("DMatrixHandle")
         .allowlist_type("bst_ulong")
         .size_t_is_usize(true)
+        // Disable doc comments to avoid doctest failures from C comments
+        .generate_comments(false)
         .generate()
         .expect("Unable to generate bindings.");
 
