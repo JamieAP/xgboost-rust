@@ -1,11 +1,11 @@
 extern crate bindgen;
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
-use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -17,26 +17,41 @@ fn get_xgboost_version() -> String {
 fn get_header_checksums() -> HashMap<&'static str, (&'static str, &'static str)> {
     let mut checksums = HashMap::new();
     // Format: version => (c_api.h SHA256, base.h SHA256)
-    checksums.insert("3.1.1", (
-        "c0f0a98eb36fb5e451fdd3e9ead2d185f4c61be2a6997fc295e5d1a94f3096e2",
-        "8d771fb20e03f3443e21cfdcd26ac5cd880be585b8817f2e0d146e7c5c7bb63a"
-    ));
-    checksums.insert("3.0.5", (
-        "2ccec6e5301fa5a1324f60af48b9c6be5879e590ed583ec9d74297e6018860bc",
-        "47f0148706907ccecb72b8484687524bc36d58b4c6fe5e7b81e59de157261ea7"
-    ));
-    checksums.insert("2.1.4", (
-        "b804850ec6c7a00f8e36f139dfce7fe348fc9ad066ff4cb7ac44a4f5420ec1dd",
-        "525c4a2ba2f6bd9b17a299978e16f91897d497d6ae0ae5df2335dd059f00d0ce"
-    ));
-    checksums.insert("1.7.6", (
-        "145ed1df652937122b6f6bc31331051eabc02226a0b62349ea593cdbe841c20d",
-        "b26e17eadbcc6350dc900b35d164eedc02b1cd2a64913c560d4d416c81a68935"
-    ));
-    checksums.insert("1.4.2", (
-        "3f5de5d046a3c9576e0c560abe5fa1e889f72b4b18ff2bf73e5f98290d47d0dc",
-        "e3abfcc730eee86acf44124d5496a2b41413f963c4bbf560513eeae0b7d12fb7"
-    ));
+    checksums.insert(
+        "3.1.1",
+        (
+            "c0f0a98eb36fb5e451fdd3e9ead2d185f4c61be2a6997fc295e5d1a94f3096e2",
+            "8d771fb20e03f3443e21cfdcd26ac5cd880be585b8817f2e0d146e7c5c7bb63a",
+        ),
+    );
+    checksums.insert(
+        "3.0.5",
+        (
+            "2ccec6e5301fa5a1324f60af48b9c6be5879e590ed583ec9d74297e6018860bc",
+            "47f0148706907ccecb72b8484687524bc36d58b4c6fe5e7b81e59de157261ea7",
+        ),
+    );
+    checksums.insert(
+        "2.1.4",
+        (
+            "b804850ec6c7a00f8e36f139dfce7fe348fc9ad066ff4cb7ac44a4f5420ec1dd",
+            "525c4a2ba2f6bd9b17a299978e16f91897d497d6ae0ae5df2335dd059f00d0ce",
+        ),
+    );
+    checksums.insert(
+        "1.7.6",
+        (
+            "145ed1df652937122b6f6bc31331051eabc02226a0b62349ea593cdbe841c20d",
+            "b26e17eadbcc6350dc900b35d164eedc02b1cd2a64913c560d4d416c81a68935",
+        ),
+    );
+    checksums.insert(
+        "1.4.2",
+        (
+            "3f5de5d046a3c9576e0c560abe5fa1e889f72b4b18ff2bf73e5f98290d47d0dc",
+            "e3abfcc730eee86acf44124d5496a2b41413f963c4bbf560513eeae0b7d12fb7",
+        ),
+    );
     checksums
 }
 
@@ -46,13 +61,18 @@ fn compute_sha256(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn verify_checksum(data: &[u8], expected: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn verify_checksum(
+    data: &[u8],
+    expected: &str,
+    filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let actual = compute_sha256(data);
     if actual != expected {
         return Err(format!(
             "SHA256 checksum mismatch for {}:\n  Expected: {}\n  Got:      {}",
             filename, expected, actual
-        ).into());
+        )
+        .into());
     }
     println!("cargo:warning=✓ Verified SHA256 for {}", filename);
     Ok(())
@@ -60,7 +80,7 @@ fn verify_checksum(data: &[u8], expected: &str, filename: &str) -> Result<(), Bo
 
 fn parse_version(version: &str) -> (u32, u32, u32) {
     let parts: Vec<&str> = version.split('.').collect();
-    let major = parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
     (major, minor, patch)
@@ -73,9 +93,15 @@ fn emit_version_cfg_flags(version: &str) {
     // See: https://github.com/dmlc/xgboost/issues/5339
     if major > 1 || (major == 1 && minor >= 4) {
         println!("cargo:rustc-cfg=xgboost_thread_safe");
-        println!("cargo:warning=XGBoost version {} supports thread-safe predictions", version);
+        println!(
+            "cargo:warning=XGBoost version {} supports thread-safe predictions",
+            version
+        );
     } else {
-        println!("cargo:warning=XGBoost version {} does NOT support thread-safe predictions", version);
+        println!(
+            "cargo:warning=XGBoost version {} does NOT support thread-safe predictions",
+            version
+        );
     }
 }
 
@@ -112,12 +138,13 @@ fn download_xgboost_headers(out_dir: &Path) -> Result<(), Box<dyn std::error::Er
     let checksums = get_header_checksums();
 
     // Get expected checksums for this version
-    let (c_api_expected, base_expected) = checksums.get(version.as_str())
-        .ok_or_else(|| format!(
+    let (c_api_expected, base_expected) = checksums.get(version.as_str()).ok_or_else(|| {
+        format!(
             "No known SHA256 checksums for XGBoost version {}. \
              Please verify this version manually or add checksums to build.rs",
             version
-        ))?;
+        )
+    })?;
 
     // Create the include/xgboost directory
     let include_dir = out_dir.join("include/xgboost");
@@ -126,19 +153,25 @@ fn download_xgboost_headers(out_dir: &Path) -> Result<(), Box<dyn std::error::Er
     // Download and verify c_api.h
     let c_api_path = include_dir.join("c_api.h");
     download_and_verify_file(
-        &format!("https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/c_api.h", version),
+        &format!(
+            "https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/c_api.h",
+            version
+        ),
         &c_api_path,
         c_api_expected,
-        "c_api.h"
+        "c_api.h",
     )?;
 
     // Download and verify base.h
     let base_path = include_dir.join("base.h");
     download_and_verify_file(
-        &format!("https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/base.h", version),
+        &format!(
+            "https://raw.githubusercontent.com/dmlc/xgboost/v{}/include/xgboost/base.h",
+            version
+        ),
         &base_path,
         base_expected,
-        "base.h"
+        "base.h",
     )?;
 
     Ok(())
@@ -148,14 +181,14 @@ fn download_and_verify_file(
     url: &str,
     dest_path: &Path,
     expected_sha256: &str,
-    filename: &str
+    filename: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:warning=Downloading {} from: {}", filename, url);
 
     // Download into memory buffer
     let response = ureq::get(url).call()?;
     let status = response.status();
-    if status < 200 || status >= 300 {
+    if !(200..300).contains(&status) {
         return Err(format!("Failed to download {}: HTTP {}", filename, status).into());
     }
 
@@ -178,14 +211,18 @@ fn download_with_retry(url: &str, max_retries: u32) -> Result<Vec<u8>, Box<dyn s
     for attempt in 0..max_retries {
         if attempt > 0 {
             let backoff = Duration::from_millis(100 * 2_u64.pow(attempt));
-            println!("cargo:warning=Retry attempt {} after {:?}", attempt + 1, backoff);
+            println!(
+                "cargo:warning=Retry attempt {} after {:?}",
+                attempt + 1,
+                backoff
+            );
             thread::sleep(backoff);
         }
 
         match ureq::get(url).call() {
             Ok(response) => {
                 let status = response.status();
-                if status < 200 || status >= 300 {
+                if !(200..300).contains(&status) {
                     last_error = Some(format!("HTTP {}", status));
                     continue;
                 }
@@ -208,7 +245,8 @@ fn download_with_retry(url: &str, max_retries: u32) -> Result<Vec<u8>, Box<dyn s
         "Failed to download after {} attempts. Last error: {}",
         max_retries,
         last_error.unwrap_or_else(|| "Unknown error".to_string())
-    ).into())
+    )
+    .into())
 }
 
 fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -242,13 +280,19 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
 
     // Check if library already exists and is valid
     if lib_dest_path.exists() {
-        println!("cargo:warning=Using cached XGBoost library at: {}", lib_dest_path.display());
+        println!(
+            "cargo:warning=Using cached XGBoost library at: {}",
+            lib_dest_path.display()
+        );
         return Ok(());
     }
 
     // Check if wheel is cached
     let wheel_buffer = if wheel_path.exists() {
-        println!("cargo:warning=Using cached wheel at: {}", wheel_path.display());
+        println!(
+            "cargo:warning=Using cached wheel at: {}",
+            wheel_path.display()
+        );
         fs::read(&wheel_path)?
     } else {
         // Download wheel with retry
@@ -257,7 +301,10 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
             wheel_filename
         );
 
-        println!("cargo:warning=Downloading XGBoost wheel from: {}", download_url);
+        println!(
+            "cargo:warning=Downloading XGBoost wheel from: {}",
+            download_url
+        );
         let buffer = download_with_retry(&download_url, 3)?;
 
         // Write atomically (temp file + rename)
@@ -307,12 +354,18 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
         return Err(format!("Library file {} not found in wheel", lib_filename).into());
     }
 
-    println!("cargo:warning=✓ Successfully extracted XGBoost library to: {}", lib_dir.display());
+    println!(
+        "cargo:warning=✓ Successfully extracted XGBoost library to: {}",
+        lib_dir.display()
+    );
 
     Ok(())
 }
 
 fn main() {
+    // Tell cargo about custom cfg flags we emit
+    println!("cargo:rustc-check-cfg=cfg(xgboost_thread_safe)");
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let xgb_include_root = out_dir.join("include");
 
@@ -371,8 +424,7 @@ fn main() {
         .join(env::var("PROFILE").unwrap());
 
     let lib_dest_path = target_dir.join(lib_filename);
-    fs::copy(&lib_source_path, &lib_dest_path)
-        .expect("Failed to copy library to target directory");
+    fs::copy(&lib_source_path, &lib_dest_path).expect("Failed to copy library to target directory");
 
     // On macOS/Linux, change the install name/soname to use @loader_path/$ORIGIN
     if os == "darwin" {
@@ -392,12 +444,12 @@ fn main() {
         // Use patchelf to set soname (if available)
         let _ = Command::new("patchelf")
             .arg("--set-soname")
-            .arg(&lib_filename)
+            .arg(lib_filename)
             .arg(&lib_source_path)
             .output();
         let _ = Command::new("patchelf")
             .arg("--set-soname")
-            .arg(&lib_filename)
+            .arg(lib_filename)
             .arg(&lib_dest_path)
             .output();
     }
@@ -417,24 +469,42 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../..");
             println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
             println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path/../..");
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_search_path.display());
+            println!(
+                "cargo:rustc-link-arg=-Wl,-rpath,{}",
+                lib_search_path.display()
+            );
             // Add the target directory to rpath as well
             if let Some(target_root) = out_dir.ancestors().find(|p| p.ends_with("target")) {
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}/debug", target_root.display());
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}/release", target_root.display());
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,{}/debug",
+                    target_root.display()
+                );
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,{}/release",
+                    target_root.display()
+                );
             }
-        },
+        }
         "linux" => {
             // For Linux, use $ORIGIN
             println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
             println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../..");
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_search_path.display());
+            println!(
+                "cargo:rustc-link-arg=-Wl,-rpath,{}",
+                lib_search_path.display()
+            );
             // Add the target directory to rpath as well
             if let Some(target_root) = out_dir.ancestors().find(|p| p.ends_with("target")) {
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}/debug", target_root.display());
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}/release", target_root.display());
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,{}/debug",
+                    target_root.display()
+                );
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,{}/release",
+                    target_root.display()
+                );
             }
-        },
+        }
         _ => {} // No rpath needed for Windows
     }
 
