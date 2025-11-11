@@ -252,13 +252,51 @@ fn download_with_retry(url: &str, max_retries: u32) -> Result<Vec<u8>, Box<dyn s
 fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let (os, arch) = get_platform_info();
     let version = get_xgboost_version();
+    let (major, minor, _patch) = parse_version(&version);
 
-    // Determine wheel filename based on platform
+    // Determine wheel filename based on platform and version
+    // Different XGBoost versions use different manylinux tags
     let wheel_filename = match (os.as_str(), arch.as_str()) {
-        ("linux", "x86_64") => format!("xgboost-{}-py3-none-manylinux_2_28_x86_64.whl", version),
-        ("linux", "aarch64") => format!("xgboost-{}-py3-none-manylinux_2_28_aarch64.whl", version),
-        ("darwin", "x86_64") => format!("xgboost-{}-py3-none-macosx_10_15_x86_64.whl", version),
-        ("darwin", "aarch64") => format!("xgboost-{}-py3-none-macosx_12_0_arm64.whl", version),
+        ("linux", "x86_64") => {
+            // Choose manylinux tag based on version
+            let manylinux_tag = if major >= 3 {
+                "manylinux_2_28"
+            } else if major == 1 && minor == 4 {
+                "manylinux2010"
+            } else {
+                "manylinux2014"
+            };
+            format!("xgboost-{}-py3-none-{}_x86_64.whl", version, manylinux_tag)
+        }
+        ("linux", "aarch64") => {
+            let manylinux_tag = if major >= 3 {
+                "manylinux_2_28"
+            } else {
+                "manylinux2014"
+            };
+            format!("xgboost-{}-py3-none-{}_aarch64.whl", version, manylinux_tag)
+        }
+        ("darwin", "x86_64") => {
+            // macOS x86_64 wheel names changed between versions
+            if major >= 3 {
+                format!("xgboost-{}-py3-none-macosx_10_15_x86_64.whl", version)
+            } else if major == 1 && minor == 4 {
+                format!("xgboost-{}-py3-none-macosx_10_14_x86_64.macosx_10_15_x86_64.macosx_11_0_x86_64.whl", version)
+            } else {
+                // Versions 1.7.x and 2.x use multi-platform tag
+                format!("xgboost-{}-py3-none-macosx_10_15_x86_64.macosx_11_0_x86_64.macosx_12_0_x86_64.whl", version)
+            }
+        }
+        ("darwin", "aarch64") => {
+            // macOS arm64 support started with version 1.5.0
+            if major == 1 && minor < 5 {
+                return Err(format!(
+                    "XGBoost {} does not have macOS arm64 support. Minimum version for arm64 is 1.5.0",
+                    version
+                ).into());
+            }
+            format!("xgboost-{}-py3-none-macosx_12_0_arm64.whl", version)
+        }
         ("windows", "x86_64") => format!("xgboost-{}-py3-none-win_amd64.whl", version),
         _ => return Err(format!("Unsupported platform: {}-{}", os, arch).into()),
     };
@@ -328,12 +366,22 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
 
     // Search for the library file in the wheel
     let mut found = false;
+    let mut searched_paths = Vec::new();
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let file_path = file.name().to_string();
 
+        // Collect paths for debugging
+        if file_path.contains(".dll") || file_path.contains(".so") || file_path.contains(".dylib") {
+            searched_paths.push(file_path.clone());
+        }
+
         // Look for the library file (usually in xgboost/lib/)
-        if file_path.ends_with(lib_filename) {
+        // Use contains check to handle path separators across platforms
+        if file_path.ends_with(lib_filename)
+            || file_path.ends_with(&format!("/{}", lib_filename))
+            || file_path.ends_with(&format!("\\{}", lib_filename))
+        {
             println!("cargo:warning=Found library at: {}", file_path);
 
             // Extract to temp file, then rename atomically
@@ -351,7 +399,18 @@ fn download_and_extract_wheel(out_dir: &Path) -> Result<(), Box<dyn std::error::
     }
 
     if !found {
-        return Err(format!("Library file {} not found in wheel", lib_filename).into());
+        let error_msg = if searched_paths.is_empty() {
+            format!(
+                "Library file {} not found in wheel. No library files found at all.",
+                lib_filename
+            )
+        } else {
+            format!(
+                "Library file {} not found in wheel. Found these library files instead: {:?}",
+                lib_filename, searched_paths
+            )
+        };
+        return Err(error_msg.into());
     }
 
     println!(
