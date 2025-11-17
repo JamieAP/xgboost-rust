@@ -83,8 +83,7 @@ impl BoosterPolarsExt for Booster {
 
 /// Convert a Polars DataFrame to dense f32 data in row-major format
 ///
-/// This is optimized for zero-copy access where possible, using Polars' internal
-/// contiguous memory layout when available.
+/// Optimized column-by-column conversion for better cache locality on source data.
 fn dataframe_to_dense(df: &DataFrame) -> XGBoostResult<(Vec<f32>, usize, usize)> {
     let num_rows = df.height();
     let num_features = df.width();
@@ -95,124 +94,30 @@ fn dataframe_to_dense(df: &DataFrame) -> XGBoostResult<(Vec<f32>, usize, usize)>
         });
     }
 
-    // Pre-allocate output buffer
-    let mut data = Vec::with_capacity(num_rows * num_features);
+    // Pre-allocate with exact size
+    let total_elements = num_rows * num_features;
+    let mut data = vec![0.0f32; total_elements];
 
-    // Convert row by row for better cache locality
-    for row_idx in 0..num_rows {
-        for col in df.get_columns() {
-            let series = col.as_materialized_series();
-            let value = extract_f32_value(series, row_idx)?;
-            data.push(value);
+    // Process column by column - cast to Float32 for simplicity and speed
+    for (col_idx, column) in df.get_columns().iter().enumerate() {
+        let series = column.as_materialized_series();
+
+        // Cast to Float32 - Polars handles all type conversions efficiently
+        let f32_series = series.cast(&DataType::Float32).map_err(|e| XGBoostError {
+            description: format!("Failed to cast column to f32: {}", e),
+        })?;
+
+        let ca = f32_series.f32().map_err(|e| XGBoostError {
+            description: format!("Failed to get f32 array: {}", e),
+        })?;
+
+        for (row_idx, opt_val) in ca.iter().enumerate() {
+            let val = opt_val.ok_or_else(|| XGBoostError {
+                description: format!("Null value at row {}, col {}", row_idx, col_idx),
+            })?;
+            data[row_idx * num_features + col_idx] = val;
         }
     }
 
     Ok((data, num_rows, num_features))
-}
-
-/// Extract an f32 value from a Series at the given index
-///
-/// Supports conversion from all numeric types and booleans.
-fn extract_f32_value(series: &Series, idx: usize) -> XGBoostResult<f32> {
-    use DataType::*;
-
-    match series.dtype() {
-        Float32 => {
-            let ca = series.f32().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to f32: {}", e),
-            })?;
-            ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })
-        }
-        Float64 => {
-            let ca = series.f64().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to f64: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        Int8 => {
-            let ca = series.i8().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to i8: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        Int16 => {
-            let ca = series.i16().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to i16: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        Int32 => {
-            let ca = series.i32().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to i32: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        Int64 => {
-            let ca = series.i64().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to i64: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        UInt8 => {
-            let ca = series.u8().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to u8: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        UInt16 => {
-            let ca = series.u16().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to u16: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        UInt32 => {
-            let ca = series.u32().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to u32: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        UInt64 => {
-            let ca = series.u64().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to u64: {}", e),
-            })?;
-            Ok(ca.get(idx).ok_or_else(|| XGBoostError {
-                description: format!("Null value at index {}", idx),
-            })? as f32)
-        }
-        Boolean => {
-            let ca = series.bool().map_err(|e| XGBoostError {
-                description: format!("Failed to cast to bool: {}", e),
-            })?;
-            Ok(
-                if ca.get(idx).ok_or_else(|| XGBoostError {
-                    description: format!("Null value at index {}", idx),
-                })? {
-                    1.0
-                } else {
-                    0.0
-                },
-            )
-        }
-        dt => Err(XGBoostError {
-            description: format!("Unsupported data type for conversion to f32: {}", dt),
-        }),
-    }
 }
