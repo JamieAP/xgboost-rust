@@ -485,7 +485,14 @@ fn main() {
         .join(env::var("PROFILE").unwrap());
 
     let lib_dest_path = target_dir.join(lib_filename);
-    fs::copy(&lib_source_path, &lib_dest_path).expect("Failed to copy library to target directory");
+    if let Err(e) = fs::copy(&lib_source_path, &lib_dest_path) {
+        println!(
+            "cargo:warning=Could not copy {} to {}: {} (non-fatal, library may already exist)",
+            lib_source_path.display(),
+            lib_dest_path.display(),
+            e
+        );
+    }
 
     // On macOS/Linux, change the install name/soname to use @loader_path/$ORIGIN
     if os == "darwin" {
